@@ -1,0 +1,13 @@
+.env
+node_modules
+.git
+.gitignore
+Dockerfile
+posts/
+backup/
+posts_backup/
+tests/
+__pycache__/
+*.md
+*.log
+foo*.py
