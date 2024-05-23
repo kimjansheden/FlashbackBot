@@ -2,24 +2,31 @@ import re
 from typing import List
 from pushbullet import Pushbullet
 
+from modules.Helpers.FileHandler import FileHandler
+from modules.Helpers.LocalFileHandler import LocalFileHandler
+from modules.Helpers.LogHelpers import LogHelpers
+
 from .Helpers.Helpers import Helpers
 from .Notifier import Notifier
 import os
 
 
 class PushbulletNotifier(Notifier):
-    def __init__(self, helper: Helpers) -> None:
+    def __init__(self, helper: Helpers, test_mode=False, file_handler: FileHandler = LocalFileHandler()) -> None:
         """
         Initialize the PushbulletNotifier class.
 
         :param helper: An instance of the Helpers class.
         """
-        super().__init__(helper)
+        super().__init__(helper, file_handler)
 
         # Get the full path to the dir where the script is running from
         self.script_dir = self.helper.file_helper.get_base_path(
             os.path.abspath(__file__), 2
         )
+
+        self.posts_dir = os.path.join(self.script_dir, "posts")
+        self.pending_path = os.path.join(self.posts_dir, "pending.json")
 
         # This dictionary maps each flag to its corresponding message
         self.kind = {
@@ -33,6 +40,9 @@ class PushbulletNotifier(Notifier):
             "request_approval": False,
         }
         self.pb = self.auth_pushbullet()
+
+        self.log_helper = LogHelpers()
+        self.test_mode = test_mode
 
     def set_flag(self, flag, value):
         """
@@ -98,24 +108,12 @@ class PushbulletNotifier(Notifier):
 
     def get_notifications(self, rejects_and_accepts=True):
         pushes_list = self.pb.get_pushes()
-        self.logger.debug(pushes_list)
+        self.logger.debug("pushes_list:", pushes_list)
+        print("pushes_list:", pushes_list)
 
         # Filter out messages with the titles 'Accept' and 'Reject' and return them as two lists
         if rejects_and_accepts:
-            accepts = []
-            rejects = []
-
-            for push in pushes_list:
-                # Check if the title is 'Accept' and add to the accepts list
-                if push.get("title") == "Accept":
-                    accepts.append(push)
-
-                # Check if the title is 'Reject' and add to the rejects list
-                elif push.get("title") == "Reject":
-                    rejects.append(push)
-
-            accept_ids = self.get_action_ids(accepts)
-            reject_ids = self.get_action_ids(rejects)
+            accept_ids, reject_ids = self.handle_rejects_and_accepts(pushes_list)
             return accept_ids, reject_ids
 
         return pushes_list
@@ -138,7 +136,7 @@ class PushbulletNotifier(Notifier):
         for iden in idens:
             self.pb.delete_push(iden)
 
-    def get_action_ids(self, pushes_list: list) -> List[str]:
+    def get_action_ids(self, pushes_list: list) -> list[str]:
         """
         Extract action IDs from a list of dictionaries representing push notifications.
 
@@ -182,3 +180,205 @@ class PushbulletNotifier(Notifier):
                     action_ids.append(action_id)
 
         return action_ids
+
+    def check_and_update_generated_answer(self, pushes_list: list):
+        """Compares generated_answer in pending.json with the Generated Answer in the push body for the respective action_id.
+
+        Args:
+            pushes_list (list): List of push dictionaries containing 'body' with action_id and generated_answer.
+
+        Returns:
+            None
+        """
+        self.log_helper.debug(
+            self.logger,
+            f"Checking for changes in list: {pushes_list}",
+            force_print=self.test_mode,
+        )
+        action_id_pattern = r"Action ID: (\d+)"
+        generated_answer_pattern = r"Generated Answer: (.*)"
+        for push in pushes_list:
+            # Check if "body" exists in the dictionary and extract the action_id from the body
+            if "body" in push:
+                match_action_id = re.search(action_id_pattern, push["body"])
+                if match_action_id:
+                    # Extract the action_id number and use it to find the Generated Answer in pending
+                    action_id = int(match_action_id.group(1))
+
+                    # Check if the Generated Answer exists in the push body and extract it
+                    match_generated_answer = re.search(
+                        generated_answer_pattern, push["body"]
+                    )
+
+                    if match_generated_answer:
+                        generated_answer_notifier = match_generated_answer.group(1)
+
+                    generated_answers_differ = self.compare_generated_answer(
+                        action_id, generated_answer_notifier
+                    )
+
+                    if generated_answers_differ:
+                        self.update_generated_answer(
+                            action_id, generated_answer_notifier
+                        )
+                    else:
+                        self.log_helper.debug(
+                            self.logger,
+                            f"Generated Answer in pending.json does not differ from the one in the push body for the action_id: {action_id}",
+                            force_print=self.test_mode
+                        )
+
+    def compare_generated_answer(self, action_id: int, generated_answer_notifier: str):
+        """Compares generated_answer in pending.json with the Generated Answer in the push body for the respective action_id.
+        Returns True if the generated_answer in pending.json is different from the one in the push body.
+
+        Args:
+            action_id (int): The action identifier to look up in pending.json.
+            generated_answer_notifier (str): The generated answer from the push body to compare.
+
+        Returns:
+            bool: True if the answers differ, False otherwise.
+        """
+        self.log_helper.debug(
+            self.logger,
+            f"Comparing generated_answer in pending.json with the Generated Answer in the push body for action_id: {action_id}",
+            force_print=self.test_mode
+        )
+        # Read the data from pending.json
+        pending_posts = self.helper.file_helper.read_json_file(self.pending_path)
+        self.log_helper.debug(self.logger, f"pending_posts path: {self.pending_path}, content: {pending_posts}", force_print=self.test_mode)
+
+        # Make sure action_id is string
+        action_id_str = str(action_id)
+
+        # Find the action_id as key in pending_posts and compare the associated Generated Answer with the one fresh from the notifier
+        if action_id_str in pending_posts:
+            generated_answer_pending = pending_posts[action_id_str]["generated_answer"]
+            self.log_helper.debug(
+                self.logger,
+                f"Comparing generated_answer in pending.json ({generated_answer_pending}) with generated_answer in notifier ({generated_answer_notifier})",
+                force_print=self.test_mode
+            )
+            if generated_answer_pending != generated_answer_notifier:
+                self.log_helper.debug(
+                    self.logger,
+                    f"Generated Answer in pending.json differs from the one in the push body for action_id: {action_id}",
+                    force_print=self.test_mode
+                )
+                return True
+            else:
+                self.log_helper.debug(
+                    self.logger,
+                    f"Generated Answer in pending.json is the same as the one in the push body for the action_id: {action_id}",
+                    force_print=self.test_mode
+                )
+                return False
+        else:
+            self.log_helper.debug(
+                self.logger,
+                f"action_id {action_id} not found in pending_posts",
+                force_print=self.test_mode
+            )
+            return False
+
+    def update_generated_answer(self, action_id: int, new_generated_answer: str):
+        """Updates the generated_answer in pending.json for the given action_id.
+        Use this function when there is a divergence between the Generated Answer
+        in the bot's pending answers and the Generated Answer in the notifier.
+        This means the user has edited the bot's answer and that change must be saved to the bot.
+
+        Args:
+            action_id (int): The action identifier for which the generated answer should be updated.
+            new_generated_answer (str): The new generated answer to update in pending.json.
+
+        Returns:
+            None
+        """
+        self.log_helper.debug(
+            self.logger,
+            f"Updating generated_answer in pending.json for the given action_id: {action_id}",
+            force_print=self.test_mode
+        )
+
+        # Make sure action_id is string
+        action_id_str = str(action_id)
+
+        # Read the data from pending.json
+        pending_posts = self.helper.file_helper.read_json_file(self.pending_path)
+        self.log_helper.debug(
+            self.logger,
+            f"pending_posts before update: {pending_posts}",
+            force_print=self.test_mode,
+        )
+
+        # Update the Generated Answer in pending.json; the only time the generated answers would differ is if the user has edited it in the front end. Thus, the notifier version is newer
+        pending_posts[action_id_str]["generated_answer"] = new_generated_answer
+        self.log_helper.debug(
+            self.logger,
+            f"pending_posts after update: {pending_posts}", force_print=self.test_mode
+        )
+        self.helper.file_helper.update_json_file(
+            self.pending_path, pending_posts, overwrite=True
+        )
+
+    def handle_rejects_and_accepts(self, pushes_list: list):
+        """
+        Processes a list of pushes, separating them into accepts and rejects,
+        and performs actions based on their titles.
+
+        Args:
+            pushes_list (list): A list of dictionaries where each dictionary
+                                represents a push with a "title" key.
+
+        Returns:
+            tuple: Two lists containing the IDs of the accepted and rejected pushes.
+        """
+        accepts_list, rejects_list = self.filter_rejects_and_accepts(pushes_list)
+
+        accept_ids = self.get_action_ids(accepts_list)
+        reject_ids = self.get_action_ids(rejects_list)
+
+        # Check if any accepted generated answer has been changed and update if necessary
+        # self.check_and_update_generated_answer(accepts_list)
+        return accept_ids, reject_ids
+
+    def filter_rejects_and_accepts(self, pushes_list: list):
+        """
+        Filters a list of pushes into two lists, one containing the accepts and one containing the rejects.
+
+        Args:
+            pushes_list (list): A list of dictionaries where each dictionary
+                                represents a push with a "title" key.
+
+        Returns:
+            tuple: Two lists, one containing the accepts and one containing the rejects.
+        """
+        accepts = []
+        rejects = []
+
+        for push in pushes_list:
+            # Check if the title is 'Accept' and add to the accepts list
+            if push.get("title") == "Accept":
+                accepts.append(push)
+
+            # Check if the title is 'Reject' and add to the rejects list
+            elif push.get("title") == "Reject":
+                rejects.append(push)
+
+        self.logger.debug("Accepts:", accepts)
+        self.logger.debug("Rejects:", rejects)
+        return accepts, rejects
+
+    def check_for_updates(self, **kwargs):
+        """Check if there are any updates from the front end and update accordingly."""
+        self.logger.debug("Checking for updates ...")
+        pushes_list: list = self.get_notifications(rejects_and_accepts=False)
+
+        self.logger.debug("Attempting to filter out rejects and accepts...")
+        accepts_list, _ = self.filter_rejects_and_accepts(pushes_list)
+        self.logger.debug("Accepts list:", accepts_list)
+
+        self.logger.debug(
+            "Attempting to check for any changes ans update pending.json ..."
+        )
+        self.check_and_update_generated_answer(accepts_list)

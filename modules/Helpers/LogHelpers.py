@@ -11,6 +11,8 @@ class LogHelpers:
         message = self._conc_args(*log_msg)
         if self._should_exclude(**kwargs):
             return
+        if kwargs.get("force_print", False):
+            print(message)
         if logger is not None:
             logger.paranoid(message)
         else:
@@ -20,17 +22,20 @@ class LogHelpers:
         message = self._conc_args(*log_msg)
         if self._should_exclude(**kwargs):
             return
-        if logger is not None:
+        if kwargs.get("force_print", False):
+            print(message)
+        if logger:
             logger.debug(message)
         else:
             # print("Logger is None: ", logger)
-            # print(message)
             return
         
     def error(self, logger: "Logger | None", *log_msg, **kwargs):
         message = self._conc_args(*log_msg)
         if self._should_exclude(**kwargs):
             return
+        if kwargs.get("force_print", False):
+            print(message)
         if logger is not None:
             logger.error(message)
         else:
@@ -40,6 +45,8 @@ class LogHelpers:
         message = self._conc_args(*log_msg)
         if self._should_exclude(**kwargs):
             return
+        if kwargs.get("force_print", False):
+            print(message)
         if logger is not None:
             logger.info(message)
         else:

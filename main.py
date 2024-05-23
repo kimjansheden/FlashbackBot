@@ -95,7 +95,7 @@ if __name__ == "__main__":
     load_dotenv()
     file_handler = create_and_get_file_handler()
     helper = Helpers(file_handler)
-    notifier = create_and_get_notifier(helper)
+    notifier = create_and_get_notifier(helper, file_handler)
 
     existing_model_path = helper.config.get("Model", "model_path")
 

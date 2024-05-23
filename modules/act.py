@@ -236,6 +236,13 @@ class Act:
         # Get the responses from the frontend (approved and rejected IDs)
         approved_ids, rejected_ids = self.notifier.get_notifications()
 
+        # Make sure the bot's data is updated with the latest from notifier
+        try:
+            self.notifier.check_for_updates()
+        except Exception as e:
+            self.logger.info(f"Could not check notifier for the latest updates: {e}")
+            return actions_taken
+
         # Now we know which Action IDs have been rejected and which have been accepted.
 
         # If the user rejects the generated response, we just need to put back the decision in decisions, and the flow will generate a new response in the next round.
@@ -413,7 +420,7 @@ class Act:
 
     def ask_for_approval(self):
         """The bot sends a notification to the user with the answer it has generated. It will then wait for the user's approval."""
-        pending_data = self.helper.file_helper.read_json_file(self.pending_path)
+        pending_posts = self.helper.file_helper.read_json_file(self.pending_path)
         kind = "request_approval"
         message = ""
 
@@ -426,7 +433,7 @@ class Act:
 
         self.logger.debug("existing_action_ids:", existing_action_ids)
 
-        for action_id, data in pending_data.items():
+        for action_id, data in pending_posts.items():
             # Check if action_id is already present in pushes
             if action_id in existing_action_ids:
                 self.logger.debug(
