@@ -113,6 +113,8 @@ class FileHelpers:
                                         If True, the entire JSON file is overwritten with 'new_data'.
                                         If False, 'new_data' is merged into the existing content of the JSON file.
                                         Default is False.
+            deep_merge (bool, optional): If True, nested dictionaries are recursively merged when merging 'new_data'
+                                     with existing data. Default is False.
 
         Returns:
             bool: True if the operation was successful, False otherwise.

@@ -3,7 +3,7 @@ from configparser import ConfigParser
 from threading import Lock
 from typing import Optional, Union
 import dropbox
-from dropbox.exceptions import ApiError
+from dropbox.exceptions import ApiError, AuthError
 from dropbox.files import (
     FileMetadata,
 )
@@ -12,7 +12,9 @@ from modules.Helpers.DropboxFileHandler.DropboxHelpers import (
     DropboxFileReader,
     DropboxFileWriter,
 )
-from modules.Helpers.DropboxFileHandler.get_or_refresh_token import get_or_refresh_dropbox_token
+from modules.Helpers.DropboxFileHandler.get_or_refresh_token import (
+    get_or_refresh_dropbox_token,
+)
 from modules.Helpers.FileHandler import FileHandler
 from modules.Helpers.Helpers import Helpers
 from modules.Helpers.LogHelpers import LogHelpers
@@ -20,7 +22,7 @@ from modules.Logger import Logger
 
 
 class DropboxFileHandler(FileHandler):
-    def __init__(self, access_token, use_cache=False):
+    def __init__(self, access_token, use_cache=False, test_mode=False):
         """
         Initialize the Dropbox client and set the access token.
         :param access_token: The access token to authenticate with Dropbox.
@@ -44,6 +46,8 @@ class DropboxFileHandler(FileHandler):
         self.__writer = DropboxFileWriter(self)
         self.__appender = DropboxFileAppender(self)
 
+        self.test_mode = test_mode
+
         atexit.register(self.log_num_calls)
         atexit.register(self.clear_cache_and_write_to_dropbox)
 
@@ -60,7 +64,9 @@ class DropboxFileHandler(FileHandler):
             self.log_level,
             file_handler=self,
         )
-        self.logger.info(f"DropboxFileHandler initialized with log level {self.log_level}.")
+        self.logger.info(
+            f"DropboxFileHandler initialized with log level {self.log_level}."
+        )
 
     def get_reader(self):
         return self.__reader
@@ -86,15 +92,21 @@ class DropboxFileHandler(FileHandler):
         :return: The file content as a string or bytes, depending on the file content and the specified mode.
         :raises ValueError: If the `path` is None.
         """
-        return self.__reader.read(path, mode)
+        return self._execute_with_retry(self.__reader.read, path, mode)
 
     def write(self, path: str, data: Union[str, bytes], mode: str = "w"):
         """
         See Super class' docstrings.
         """
-        self.__writer.write(path, data, mode)
+        self._execute_with_retry(self.__writer.write, path, data, mode)
 
     def delete(self, path):
+        """
+        Delete a file from Dropbox.
+        """
+        self._execute_with_retry(self._delete, path)
+
+    def _delete(self, path):
         """
         Delete a file from Dropbox.
         """
@@ -119,7 +131,7 @@ class DropboxFileHandler(FileHandler):
         :param path: The path of the file within Dropbox where the content will be appended.
         :param new_content: The content to be appended to the file. Can be a string or bytes.
         """
-        self.__appender.append(path, new_content)
+        self._execute_with_retry(self.__appender.append, path, new_content)
 
     def exists(self, path: str) -> bool:
         """
@@ -135,7 +147,7 @@ class DropboxFileHandler(FileHandler):
                     )
                     return True
         try:
-            self.__dbx_client.files_get_metadata(path)
+            self._execute_with_retry(self.__dbx_client.files_get_metadata, path)
             self.num_calls += 1
             self.log_helper.debug(
                 self.logger, f"File {path} found in Dropbox.", path=path
@@ -170,8 +182,8 @@ class DropboxFileHandler(FileHandler):
                         else cached_data
                     )
         try:
-            metadata: Optional[FileMetadata] = self.__dbx_client.files_get_metadata(
-                path
+            metadata: Optional[FileMetadata] = self._execute_with_retry(
+                self.__dbx_client.files_get_metadata, path
             )
             if isinstance(metadata, FileMetadata):
                 return metadata.size
@@ -198,7 +210,7 @@ class DropboxFileHandler(FileHandler):
         re-raised.
         """
         try:
-            self.__dbx_client.files_create_folder(path)
+            self._execute_with_retry(self.__dbx_client.files_create_folder, path)
         except ApiError as e:
             if e.error.is_path() and e.error.get_path().is_conflict():
                 self.log_helper.info(
@@ -284,4 +296,54 @@ class DropboxFileHandler(FileHandler):
         self.clear_cache_and_write_to_dropbox()
 
     def get_or_refresh_token(self):
-        self.token = get_or_refresh_dropbox_token()
+        self.log_helper.debug(
+            self.logger,
+            "Getting or refreshing Dropbox token.",
+            force_print=self.test_mode,
+        )
+        self.log_helper.debug(
+            self.logger,
+            f"Old Dropbox token: {self.access_token}",
+            force_print=self.test_mode,
+        )
+        self.access_token = get_or_refresh_dropbox_token()
+        self.log_helper.debug(
+            self.logger,
+            f"New Dropbox token: {self.access_token}",
+            force_print=self.test_mode,
+        )
+        # Alternately, you can just switch the old access token with the new one directly in the dropbox client instead of creating a new one:
+        # self.__dbx_client._oauth2_access_token = self.access_token
+        self.__dbx_client = dropbox.Dropbox(self.access_token)
+        return self.access_token
+
+    def _execute_with_retry(self, func, *args, **kwargs):
+        try:
+            func_name = getattr(func, "__name__", str(func))
+            max_length = 20
+            truncated_args = tuple(
+                (str(arg)[:max_length] + "..." if len(str(arg)) > max_length else arg)
+                for arg in args
+            )
+            self.log_helper.debug(
+                self.logger,
+                f"Trying to execute operation '{func_name}' with args {truncated_args} and kwargs {kwargs}.",
+                force_print=self.test_mode,
+            )
+            return func(*args, **kwargs)
+        except AuthError as e:
+            self.log_helper.error(
+                self.logger,
+                f"AuthError encountered: {e}. Refreshing token.",
+                force_print=self.test_mode,
+            )
+            self.get_or_refresh_token()
+            try:
+                return func(*args, **kwargs)
+            except AuthError as e:
+                self.log_helper.error(
+                    self.logger,
+                    f"AuthError encountered again after refreshing token: {e}",
+                    force_print=self.test_mode,
+                )
+                raise  # Reraise the exception if it occurs again

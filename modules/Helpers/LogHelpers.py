@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Optional, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from modules.Logger import Logger
@@ -13,10 +13,11 @@ class LogHelpers:
             return
         if kwargs.get("force_print", False):
             print(message)
-        if logger is not None:
+        if logger:
             logger.paranoid(message)
         else:
-            print(message)
+            # print(message)
+            return
 
     def debug(self, logger: "Logger | None", *log_msg, **kwargs):
         message = self._conc_args(*log_msg)
@@ -36,7 +37,7 @@ class LogHelpers:
             return
         if kwargs.get("force_print", False):
             print(message)
-        if logger is not None:
+        if logger:
             logger.error(message)
         else:
             print(message)

@@ -23,7 +23,6 @@ class DropboxFileWriter:
 
     Attributes:
         handler (DropboxFileHandler): The handler responsible for managing Dropbox operations and associated utilities.
-        dbx_client: The Dropbox client obtained from the handler.
         log_helper: A logging helper obtained from the handler for logging activities.
         lock: A threading lock from the handler to manage concurrent access.
         cache (dict): A local cache for file contents managed by the handler.
@@ -32,7 +31,6 @@ class DropboxFileWriter:
 
     def __init__(self, handler: "DropboxFileHandler"):
         self.handler = handler
-        self.dbx_client = handler.get_client()
         self.log_helper = handler.log_helper
         self.lock = handler.lock
         self.cache = handler.cache
@@ -91,7 +89,7 @@ class DropboxFileWriter:
             path=path,
         )
         # If the file does not exist, start with the new content
-        self.dbx_client.files_upload(
+        self.handler.get_client().files_upload(
             (
                 new_content.encode("utf-8")
                 if isinstance(new_content, str)
@@ -177,20 +175,17 @@ class DropboxFileWriter:
         logger = self.handler.get_logger()
         chunk_size = 4 * 1024 * 1024  # 4 MB chunk size
         self.log_helper.debug(
-            logger, f"Data size {data_size} exceeds the allowed {self.large_file_limit}. Uploading data in chunks."
+            logger,
+            f"Data size {data_size} exceeds the allowed {self.large_file_limit}. Uploading data in chunks.",
         )
         # Make sure data is bytes
-        data = (
-            data.encode("utf-8")
-            if isinstance(data, str)
-            else data
-        )
+        data = data.encode("utf-8") if isinstance(data, str) else data
         try:
             # Start an upload session with the first chunk of data
-            sess_result: Optional[UploadSessionStartResult] = (
-                self.dbx_client.files_upload_session_start(
-                    data[:chunk_size]  # First chunk of data
-                )
+            sess_result: Optional[
+                UploadSessionStartResult
+            ] = self.handler.get_client().files_upload_session_start(
+                data[:chunk_size]  # First chunk of data
             )
             # Initialize the cursor with the session ID and the size of the uploaded chunk
             if isinstance(sess_result, UploadSessionStartResult):
@@ -201,7 +196,9 @@ class DropboxFileWriter:
                 # Loop through the rest of `data` in `chunk_size` pieces using `files_upload_session_append_v2`
                 for i in range(chunk_size, len(data), chunk_size):
                     next_chunk = data[i : i + chunk_size]
-                    self.dbx_client.files_upload_session_append_v2(next_chunk, cursor)
+                    self.handler.get_client().files_upload_session_append_v2(
+                        next_chunk, cursor
+                    )
                     cursor.offset += len(
                         next_chunk
                     )  # Update the cursor offset after each upload
@@ -209,7 +206,9 @@ class DropboxFileWriter:
                 # Prepare the commit with the destination path and mode to overwrite
                 commit = CommitInfo(path=path, mode=WriteMode.overwrite)
                 # Finish the upload session with an empty byte string (since all data was already uploaded)
-                self.dbx_client.files_upload_session_finish(b"", cursor, commit)
+                self.handler.get_client().files_upload_session_finish(
+                    b"", cursor, commit
+                )
                 self.handler.num_calls += 1
                 self.log_helper.debug(logger, f"Wrote {path} to Dropbox in chunks.")
         except ApiError as e:
@@ -231,11 +230,22 @@ class DropboxFileWriter:
 
         Raises:
             ApiError: If Dropbox returns an API-related error not associated with the path of the file or other upload issues.
-            FileNotFoundError: If a non-path related error occurs indicating the file could not be found, and thus cannot be created.
+            ConnectionError: If there is a connection error during the upload.
         """
         logger = self.handler.get_logger()
+
+        # Get the current file size, in MB
+        current_size_display, unit = self.handler.convert_size_to_display(
+            data_size
+        )
+        current_large_size_display, _ = self.handler.convert_size_to_display(self.large_file_limit)
+        
+        self.log_helper.debug(
+            logger,
+            f"Data size {current_size_display} {unit} does not exceed the allowed {current_large_size_display} {unit}. Uploading data directly.",
+        )
         try:
-            self.dbx_client.files_upload(
+            self.handler.get_client().files_upload(
                 data.encode("utf-8") if isinstance(data, str) else data,
                 path,
                 mode=WriteMode.overwrite,
@@ -265,12 +275,12 @@ class DropboxFileWriter:
                     f"Could not write file {path} to Dropbox due to a timeout error: {error}\nLowering size limit and trying to upload in chunks",
                     path=path,
                 )
-                current_size_display, unit = self.handler.convert_size_to_display(
-                    data_size
-                )
+                # Calculate a new size limit by subtracting 5 MB from the current size
+                # This is done to lower the size limit if the upload times out, ensuring that it uploads in chunks instead
                 self.large_file_limit = self.calculate_new_size_limit(
                     current_size_display, unit, subtract_size_mb=5
                 )
+
                 self._upload_in_chunks(path, data, data_size, mode)
             else:
                 self.log_helper.debug(

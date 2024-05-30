@@ -21,7 +21,7 @@ class Notifier(ABC):
         pass
 
     @abstractmethod
-    def get_notifications(self, rejects_and_accepts=True) -> (tuple[List[str], List[str]] | Any | list[Any]):
+    def get_notifications(self, rejects_and_accepts=True) -> (tuple | Any | list[Any]):
         pass
 
     @abstractmethod

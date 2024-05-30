@@ -14,7 +14,6 @@ class DropboxFileAppender:
 
     Attributes:
         handler (DropboxFileHandler): The handler responsible for managing Dropbox operations and associated utilities.
-        dbx_client: The Dropbox client obtained from the handler.
         log_helper: A logging helper obtained from the handler for logging activities.
         lock: A threading lock from the handler to manage concurrent access.
         cache (dict): A local cache for file contents managed by the handler.
@@ -24,7 +23,6 @@ class DropboxFileAppender:
 
     def __init__(self, handler: "DropboxFileHandler"):
         self.handler = handler
-        self.dbx_client = handler.get_client()
         self.log_helper = handler.log_helper
         self.lock = handler.lock
         self.cache = handler.cache
@@ -59,7 +57,7 @@ class DropboxFileAppender:
                 path=path,
             )
             # Upload the updated content, overwriting the existing file
-            self.dbx_client.files_upload(
+            self.handler.get_client().files_upload(
                 updated_content, path, mode=WriteMode.overwrite
             )
             self.handler.num_calls += 1

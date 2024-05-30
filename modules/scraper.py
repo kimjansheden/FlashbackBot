@@ -1,3 +1,4 @@
+import traceback
 from modules.Helpers.FileHandler import FileHandler
 from modules.Logger import Logger
 from .Helpers.Helpers import Helpers
@@ -217,7 +218,8 @@ class Scraper:
                 self.logger.info(f"Scraping page {page_number}")
                 try:
                     # Rotate User-Agent
-                    self.rotate_user_agent(driver)
+                    if not test_mode:
+                        self.rotate_user_agent(driver)
 
                     # Check if we got a 503 error
                     if (
@@ -325,6 +327,7 @@ class Scraper:
                     continue
                 except Exception as e:
                     self.logger.debug(f"An error occurred on page {page_number}: {e}")
+                    self.logger.debug(traceback.format_exc())
                     break
 
             driver.quit()

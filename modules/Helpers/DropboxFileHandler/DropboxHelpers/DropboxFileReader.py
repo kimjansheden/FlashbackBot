@@ -11,18 +11,17 @@ class DropboxFileReader:
 
     Attributes:
         handler (DropboxFileHandler): The handler responsible for managing Dropbox operations and associated utilities.
-        dbx_client: The Dropbox client obtained from the handler.
         log_helper: A logging helper obtained from the handler for logging activities.
         lock: A threading lock from the handler to manage concurrent access.
         cache (dict): A local cache for file contents managed by the handler.
     """
 
-    def __init__(self, handler: "DropboxFileHandler"):
+    def __init__(self, handler: "DropboxFileHandler", test_mode=False):
         self.handler = handler
-        self.dbx_client = handler.get_client()
         self.log_helper = handler.log_helper
         self.lock = handler.lock
         self.cache = handler.cache
+        self.test_mode = test_mode
 
     def read(self, path: str, mode: str = "r") -> str | bytes:
         """
@@ -135,13 +134,15 @@ class DropboxFileReader:
             self.log_helper.debug(
                 logger, f"Attempting to read file {path} from Dropbox.", path=path
             )
-            metadata, response = self.dbx_client.files_download(path)
+            metadata, response = self.handler.get_client().files_download(path)
             self.handler.num_calls += 1
             self.log_helper.debug(
                 logger, f"File {path} read successfully from Dropbox.", path=path
             )
             self.log_helper.paranoid(
-                logger, f"Metadata: {metadata}, Response: {response}"
+                logger,
+                f"Metadata: {metadata}, Response: {response}",
+                force_print=self.test_mode,
             )
             # If use_cache is True, we'll store the file in the cache
             if self.handler.use_cache:

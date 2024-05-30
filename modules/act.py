@@ -1,4 +1,5 @@
 import json
+from modules.Helpers.ActHelpers import ActHelpers
 from modules.Helpers.FileHandler import FileHandler
 from modules.Logger import Logger
 from .Notifier import Notifier
@@ -39,6 +40,9 @@ class Act:
         self.pending_path = os.path.join(self.posts_dir, "pending.json")
         self.decisions_json_path = os.path.join(self.posts_dir, "decisions.json")
         self.post_history_json_path = os.path.join(self.posts_dir, "post_history.json")
+        self.skipped_history_json_path = os.path.join(
+            self.posts_dir, "skipped_history.json"
+        )
         self.post_status_json_path = os.path.join(self.posts_dir, "post_status.json")
 
         # BUILD THE MODEL
@@ -59,6 +63,9 @@ class Act:
         self.decisions = self.helper.file_helper.read_json_file(
             self.decisions_json_path
         )
+
+        # Create the ActHelper
+        self.act_helper = ActHelpers(self)
 
     def post(self, approved_id, approved_post):
         self.can_post_again = self.check_if_allowed_to_post(approved_id)
@@ -226,6 +233,7 @@ class Act:
         # Here we have generated responses, saved them in pending, and removed the corresponding original posts in decisions.
         # Then comes notify and ask for approval – and they should only read from the latest file in the chain, at this stage pending.json
         try:
+            self.logger.debug("Asking for approval")
             self.ask_for_approval()
         except Exception as e:
             self.logger.info(f"Could not ask for approval: {e}")
@@ -234,13 +242,13 @@ class Act:
         # Here we have sent the responses to the frontend, and now we must wait for a response. So if this runs periodically, there will be nothing new to send to the frontend. But we must check every time if there is something to retrieve from the notifier.
 
         # Get the responses from the frontend (approved and rejected IDs)
-        approved_ids, rejected_ids = self.notifier.get_notifications()
+        approved_ids, rejected_ids, skipped_ids = self.notifier.get_notifications()
 
         # Make sure the bot's data is updated with the latest from notifier
         try:
             self.notifier.check_for_updates()
         except Exception as e:
-            self.logger.info(f"Could not check notifier for the latest updates: {e}")
+            self.logger.error(f"Could not check notifier for the latest updates: {e}")
             return actions_taken
 
         # Now we know which Action IDs have been rejected and which have been accepted.
@@ -252,80 +260,21 @@ class Act:
         pending_posts = self.helper.file_helper.read_json_file(self.pending_path)
 
         # Handle approved responses
-        pending_posts, actions_taken = self._handle_approved_responses(
+        pending_posts, actions_taken = self.act_helper.handle_approved_responses(
             actions_taken, pending_posts, approved_ids
         )
 
         # Handle rejected responses
-        pending_posts, actions_taken = self._handle_rejected_responses(
+        pending_posts, actions_taken = self.act_helper.handle_rejected_responses(
             decisions, actions_taken, pending_posts, rejected_ids
         )
 
+        # Handle skipped responses
+        pending_posts, actions_taken = self.act_helper.handle_skipped_responses(
+            actions_taken, pending_posts, skipped_ids
+        )
+
         return actions_taken
-
-    def _handle_rejected_responses(
-        self,
-        decisions: dict,
-        actions_taken: dict,
-        pending_posts: dict,
-        rejected_ids: list,
-    ):
-        for rejected_id in rejected_ids:
-            if rejected_id not in pending_posts:
-                continue
-            self.logger.info(f"{rejected_id} has been rejected")
-            rejected_post = pending_posts[rejected_id]
-            original_post_id = rejected_post["original_post_id"]
-            unique_post_id = rejected_post["original_post"]["unique_id"]
-
-            # Check if the original_post_id is NOT already in decisions before adding it back
-            if original_post_id not in decisions:
-                # Add the post back to decisions.json ONLY if it doesn't already exist
-                decisions[original_post_id] = rejected_post["original_post"]
-                self.helper.file_helper.update_json_file(
-                    self.decisions_json_path, decisions, overwrite=True
-                )
-
-            # Remove the post from pending.json
-            del pending_posts[rejected_id]
-            self.helper.file_helper.update_json_file(
-                self.pending_path, pending_posts, overwrite=True
-            )
-
-            # Remove the post from pushes
-            self.notifier.delete_notification(rejected_id)
-
-            # Add the post to actions_taken
-            actions_taken[unique_post_id] = {
-                "Action ID:": rejected_id,
-                "Action:": "Rejected and sent back for regeneration",
-            }
-        return pending_posts, actions_taken
-
-    def _handle_approved_responses(
-        self, actions_taken: dict, pending_posts: dict, approved_ids: list
-    ):
-        for approved_id in approved_ids:
-            if approved_id in pending_posts:
-                approved_post = pending_posts[approved_id]
-                original_post_id = approved_post["original_post_id"]
-                unique_post_id = approved_post["original_post"]["unique_id"]
-                successful_post = self.post(approved_id, approved_post)
-
-                # If a post has been successfully posted, the post has been removed from pending_posts
-                if successful_post:
-                    # Reload 'pending_posts' from the file to reflect the latest changes
-                    pending_posts = self.helper.file_helper.read_json_file(
-                        self.pending_path
-                    )
-
-                    # Add the post to actions_taken
-                    actions_taken[unique_post_id] = {
-                        "Action ID:": approved_id,
-                        "Action:": "Posted",
-                    }
-
-        return pending_posts, actions_taken
 
     def check_if_allowed_to_post(self, approved_id=None):
         """Determines if the bot is allowed to post again (overall, i.e. at all). So even if we have Accept messages from the user, the following conditions must still be true.

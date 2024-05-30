@@ -62,10 +62,16 @@ def get_or_refresh_dropbox_token(refresh_token="", app_key="", app_secret=""):
     """
     Retrieves a valid Dropbox access token, either from the stored file or by renewing it.
     """
-    if not refresh_token or not app_key or not app_secret:
+    if not refresh_token:
         refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN", "")
+    if not app_key:
         app_key = os.getenv("DROPBOX_APP_KEY", "")
+    if not app_secret:
         app_secret = os.getenv("DROPBOX_APP_SECRET", "")
+
+    if not refresh_token or not app_key or not app_secret:
+        raise ValueError("Refresh token, app key, and app secret must be provided.")
+    
     token_data = read_token_from_file()
 
     ## TODO: Replace prints with logger
@@ -88,8 +94,13 @@ def get_or_refresh_dropbox_token(refresh_token="", app_key="", app_secret=""):
         print(
             "Existing access token is invalid, expired, or missing; fetching a new one."
         )
-        new_access_token, expires_in = get_new_access_token(
-            refresh_token, app_key, app_secret
-        )
-        write_token_to_file(new_access_token, expires_in)
-        return new_access_token
+        # print("refresh_token:", refresh_token, "app_key:", app_key, "app_secret:", app_secret)
+        try:
+            new_access_token, expires_in = get_new_access_token(
+                refresh_token, app_key, app_secret
+            )
+            write_token_to_file(new_access_token, expires_in)
+            return new_access_token
+        except Exception as e:
+            print(f"Error fetching new access token: {e}")
+            return ""

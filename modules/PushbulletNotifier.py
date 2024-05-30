@@ -1,3 +1,4 @@
+import inspect
 import re
 from typing import List
 from pushbullet import Pushbullet
@@ -109,16 +110,23 @@ class PushbulletNotifier(Notifier):
     def get_notifications(self, rejects_and_accepts=True):
         pushes_list = self.pb.get_pushes()
         self.logger.debug("pushes_list:", pushes_list)
-        print("pushes_list:", pushes_list)
 
         # Filter out messages with the titles 'Accept' and 'Reject' and return them as two lists
         if rejects_and_accepts:
-            accept_ids, reject_ids = self.handle_rejects_and_accepts(pushes_list)
-            return accept_ids, reject_ids
+            accept_ids, reject_ids = self.get_rejects_and_accepts_ids(pushes_list)
+            skip_ids = self.get_skip_ids(pushes_list)
+            return accept_ids, reject_ids, skip_ids
 
         return pushes_list
 
     def delete_notification(self, action_id):
+        # Get the caller's information
+        stack = inspect.stack()
+        caller = stack[1]  # Index 1 to get the immediate caller
+        caller_info = f"{caller.function} at {caller.filename}:{caller.lineno}"
+        
+        self.log_helper.debug(self.logger, f"Deleting action_id: {action_id} called from {caller_info}")
+
         # Here it should connect the action_id with the right iden and then send for deletion
         pushes_list = self.pb.get_pushes()
         idens = []
@@ -128,12 +136,17 @@ class PushbulletNotifier(Notifier):
             if "body" in push:
                 match = re.search(pattern, push["body"])
                 if match:
+                    self.log_helper.debug(
+                        self.logger, f"Found match for action_id {action_id}"
+                    )
                     # Extract the idens
                     # For every action_id there are two pushes: a message and a reject/accept
                     iden = push["iden"]
                     idens.append(iden)
 
+        self.log_helper.debug(self.logger, f"idens: {idens}")
         for iden in idens:
+            self.log_helper.debug(self.logger, f"Deleting push with iden: {iden}")
             self.pb.delete_push(iden)
 
     def get_action_ids(self, pushes_list: list) -> list[str]:
@@ -196,7 +209,7 @@ class PushbulletNotifier(Notifier):
             force_print=self.test_mode,
         )
         action_id_pattern = r"Action ID: (\d+)"
-        generated_answer_pattern = r"Generated Answer: (.*)"
+        generated_answer_pattern = r"Generated Answer: ([\s\S]*)"
         for push in pushes_list:
             # Check if "body" exists in the dictionary and extract the action_id from the body
             if "body" in push:
@@ -207,11 +220,21 @@ class PushbulletNotifier(Notifier):
 
                     # Check if the Generated Answer exists in the push body and extract it
                     match_generated_answer = re.search(
-                        generated_answer_pattern, push["body"]
+                        generated_answer_pattern, push["body"], re.MULTILINE
+                    )
+                    self.log_helper.debug(
+                        self.logger,
+                        f"match_generated_answer: {match_generated_answer}",
+                        force_print=self.test_mode,
                     )
 
                     if match_generated_answer:
                         generated_answer_notifier = match_generated_answer.group(1)
+                        self.log_helper.debug(
+                            self.logger,
+                            f"generated_answer_notifier: {generated_answer_notifier}",
+                            force_print=self.test_mode,
+                        )
 
                     generated_answers_differ = self.compare_generated_answer(
                         action_id, generated_answer_notifier
@@ -321,7 +344,7 @@ class PushbulletNotifier(Notifier):
             self.pending_path, pending_posts, overwrite=True
         )
 
-    def handle_rejects_and_accepts(self, pushes_list: list):
+    def get_rejects_and_accepts_ids(self, pushes_list: list):
         """
         Processes a list of pushes, separating them into accepts and rejects,
         and performs actions based on their titles.
@@ -333,28 +356,45 @@ class PushbulletNotifier(Notifier):
         Returns:
             tuple: Two lists containing the IDs of the accepted and rejected pushes.
         """
-        accepts_list, rejects_list = self.filter_rejects_and_accepts(pushes_list)
+        accepts_list, rejects_list, _ = self.filter_pushes(pushes_list)
 
         accept_ids = self.get_action_ids(accepts_list)
         reject_ids = self.get_action_ids(rejects_list)
 
-        # Check if any accepted generated answer has been changed and update if necessary
-        # self.check_and_update_generated_answer(accepts_list)
         return accept_ids, reject_ids
 
-    def filter_rejects_and_accepts(self, pushes_list: list):
+    def get_skip_ids(self, pushes_list: list):
         """
-        Filters a list of pushes into two lists, one containing the accepts and one containing the rejects.
+        Processes a list of pushes, separating them into skips,
+        and performs actions based on their titles.
 
         Args:
             pushes_list (list): A list of dictionaries where each dictionary
                                 represents a push with a "title" key.
 
         Returns:
-            tuple: Two lists, one containing the accepts and one containing the rejects.
+            list: A list containing the IDs of the skipped pushes.
+        """
+        _, _, skips_lists = self.filter_pushes(pushes_list)
+
+        skip_ids = self.get_action_ids(skips_lists)
+
+        return skip_ids
+
+    def filter_pushes(self, pushes_list: list):
+        """
+        Filters a list of pushes into three lists: one containing the accepts, one containing the rejects and one containing the skips.
+
+        Args:
+            pushes_list (list): A list of dictionaries where each dictionary
+                                represents a push with a "title" key.
+
+        Returns:
+            tuple: Three lists: one containing the accepts, one containing the rejects and one containing the skips.
         """
         accepts = []
         rejects = []
+        skips = []
 
         for push in pushes_list:
             # Check if the title is 'Accept' and add to the accepts list
@@ -365,17 +405,22 @@ class PushbulletNotifier(Notifier):
             elif push.get("title") == "Reject":
                 rejects.append(push)
 
+            # Check if the title is 'Skip' and add to the skips list
+            elif push.get("title") == "Skip":
+                skips.append(push)
+
         self.logger.debug("Accepts:", accepts)
         self.logger.debug("Rejects:", rejects)
-        return accepts, rejects
+        self.logger.debug("Skips:", skips)
+        return accepts, rejects, skips
 
     def check_for_updates(self, **kwargs):
         """Check if there are any updates from the front end and update accordingly."""
         self.logger.debug("Checking for updates ...")
         pushes_list: list = self.get_notifications(rejects_and_accepts=False)
 
-        self.logger.debug("Attempting to filter out rejects and accepts...")
-        accepts_list, _ = self.filter_rejects_and_accepts(pushes_list)
+        self.logger.debug("Attempting to filter out accepts...")
+        accepts_list, _, _ = self.filter_pushes(pushes_list)
         self.logger.debug("Accepts list:", accepts_list)
 
         self.logger.debug(

@@ -2,9 +2,11 @@ from datetime import datetime
 import os
 import pickle
 from typing import Optional
+from venv import logger
 
 from regex import E
 from modules.Helpers.FileHandler import FileHandler
+from modules.Helpers.PostHelpers import PostHelpers
 from modules.Logger import Logger
 from modules.scraper import Scraper
 from .Helpers.Helpers import Helpers
@@ -35,6 +37,7 @@ class Post:
         self.logger = Logger(
             "Post Logger", "post_log.log", self.log_level, file_handler=file_handler
         )
+        self.post_helper = PostHelpers(self.helper, self.logger)
 
         # LOAD PATHS
         self.script_dir = self.helper.file_helper.get_base_path(
@@ -139,7 +142,9 @@ class Post:
         self.notifier.delete_notification(approved_id)
 
         time_of_post = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._move_post_to_history(approved_id, time_of_post)
+
+        self.post_helper.move_post_to_history(approved_id, time_of_post, self.pending_path, self.post_history_json_path)
+
         self.helper.save_time_of_last_post(time_of_post)
 
         # Clears the waiting time
@@ -262,65 +267,6 @@ class Post:
             # If there is an exception, the menu is not visible
             self.logger.info(f"Login check failed. Reason: {e}")
             return False
-
-    def _move_post_to_history(self, post_id, time_of_post):
-        # Load the pending posts
-        pending_posts = self.helper.file_helper.read_json_file(self.pending_path)
-        self.logger.debug(f"pending_posts loaded from file: {self.pending_path}")
-
-        # Check if the post exists in pending
-        if post_id not in pending_posts:
-            self.logger.debug(f"Post with ID {post_id} not found in pending.")
-            return
-
-        # Extract the post
-        post = pending_posts.pop(post_id)
-
-        self.logger.debug(
-            f"Post {post_id} removed from pending. Remaining posts: {pending_posts.keys()}"
-        )
-
-        # Add the time of the post
-        time_of_post = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        post["time_of_post"] = time_of_post
-
-        # Save the updated pending posts back to pending.json
-        self.logger.debug("Pending posts before update:", pending_posts)
-        success = self.helper.file_helper.update_json_file(
-            filepath=self.pending_path, new_data=pending_posts, overwrite=True
-        )
-        if success:
-            self.logger.debug(
-                f"Pending posts file {self.pending_path} updated successfully for post ID {post_id}."
-            )
-        else:
-            self.logger.debug(
-                f"Failed to update pending posts file for post ID {post_id}."
-            )
-        updated_pending_posts = self.helper.file_helper.read_json_file(
-            self.pending_path
-        )
-        self.logger.debug(f"pending_posts loaded from file: {self.pending_path}")
-        self.logger.debug("Pending posts after update:", updated_pending_posts)
-
-        post_history = self.helper.file_helper.read_json_file(
-            self.post_history_json_path
-        )
-
-        # Add the post to the history
-        post_history[post_id] = post
-
-        # Save the updated history back to post_history.json
-        self.helper.file_helper.update_json_file(
-            filepath=self.post_history_json_path, new_data=post_history, overwrite=True
-        )
-
-        # Update the config.ini file
-        self.helper.update_config("Time", {"time_of_last_post": time_of_post})
-
-        self.logger.info(
-            f"Post {post_id} moved to history and time updated successfully."
-        )
 
     def _accept_cookies_if_prompted(self):
         try:
