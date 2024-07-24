@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from CustomArgumentParser import CustomArgumentParser
 from bot import FlashbackBot
 from modules.Helpers.Helpers import Helpers
+from modules.Helpers.create_and_get_bot_settings import get_bot_settings
 from modules.Helpers.create_and_get_file_handler import create_and_get_file_handler
 from modules.Helpers.create_and_get_notifier import create_and_get_notifier
 from modules.Helpers.create_and_get_model import create_and_get_model
@@ -114,6 +115,10 @@ if __name__ == "__main__":
         print("Running in continuous mode …")
         while True:
             file_handler.get_or_refresh_token()
+
+            # Get the actual BotSettings and refresh the model
+            bot_settings = get_bot_settings(helper, bot.actions.model.logger)
+            model.refresh_bot_settings(bot_settings)
             bot.run(test_mode)
             bot.execute_callbacks()
             bot.random_sleep()

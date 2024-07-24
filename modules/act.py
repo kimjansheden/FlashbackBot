@@ -67,7 +67,7 @@ class Act:
         # Create the ActHelper
         self.act_helper = ActHelpers(self)
 
-    def post(self, approved_id, approved_post):
+    def post(self, approved_id: str, approved_post):
         self.can_post_again = self.check_if_allowed_to_post(approved_id)
         # If conditions are passed
         if self.can_post_again[0]:
@@ -194,13 +194,14 @@ class Act:
         # Generate an answer from the model
         for post_id, decision in decisions.items():
             try:
-                inferred_answer, reason = self.generate_answer(decision)
+                inferred_answer, reason, model_settings = self.generate_answer(decision)
                 unique_post_id = decision["unique_id"]
                 last_action_id += 1
                 actions_taken[unique_post_id] = {
                     "Action ID:": last_action_id,
                     "generated_answer": inferred_answer,
                     "reason": reason,
+                    "model_settings": model_settings.to_dict(),
                 }
 
                 # With the answer successfully generated, the decision is now handled and can be removed
@@ -365,7 +366,10 @@ class Act:
         # Send this full context to the model to get an inferred answer
         inferred_answer: str = self.model.generate_answer(post)
 
-        return inferred_answer, reason
+        # Get the settings the model used to generate the answer
+        model_settings = self.model.bot_settings
+
+        return inferred_answer, reason, model_settings
 
     def ask_for_approval(self):
         """The bot sends a notification to the user with the answer it has generated. It will then wait for the user's approval."""
@@ -395,8 +399,8 @@ class Act:
             quoted_post = data["original_post"]["quote"]["quoted_post"]
             original_post = data["original_post"]["post"]
             generated_answer = data["generated_answer"]
-            message += f"Action ID: {action_id}\nFrom Username: {original_username}\nQuoted User: {quoted_user}\nQuoted Post: {quoted_post}\nOriginal Post: {original_post}\nGenerated Answer: {generated_answer}"
-        if message:
+            message = f"Action ID: {action_id}\nFrom Username: {original_username}\nQuoted User: {quoted_user}\nQuoted Post: {quoted_post}\nOriginal Post: {original_post}\nGenerated Answer: {generated_answer}"
+            
             self.notify(flag=kind, message=message, push=True, email=True)
 
     def _initialize_files(self):

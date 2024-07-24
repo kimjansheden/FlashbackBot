@@ -1,7 +1,10 @@
 import inspect
+import json
 import re
+from textwrap import indent
 from typing import List
 from pushbullet import Pushbullet
+from pushbullet.errors import PushbulletError
 
 from modules.Helpers.FileHandler import FileHandler
 from modules.Helpers.LocalFileHandler import LocalFileHandler
@@ -105,7 +108,14 @@ class PushbulletNotifier(Notifier):
 
         self.logger.debug("Current working directory: " + os.getcwd())
         self.logger.debug(f"API Key being sent to Pushbullet: {pb_creds}")
-        return Pushbullet(api_key=pb_creds)
+        try:
+            pb = Pushbullet(api_key=pb_creds)
+        except PushbulletError as e:
+            if "502" in str(e):
+                self.logger.error(
+                    "Could not login to PushBullet. Please try again later. Error code: 502. Did you try to login on their website? Users must login once a month to keep active."
+                )
+        return pb
 
     def get_notifications(self, rejects_and_accepts=True):
         pushes_list = self.pb.get_pushes()
@@ -149,7 +159,7 @@ class PushbulletNotifier(Notifier):
             self.log_helper.debug(self.logger, f"Deleting push with iden: {iden}")
             self.pb.delete_push(iden)
 
-    def get_action_ids(self, pushes_list: list) -> list[str]:
+    def get_action_ids(self, pushes_list: list[dict[str, str|bool|int|float]]) -> list[str]:
         """
         Extract action IDs from a list of dictionaries representing push notifications.
 
@@ -181,12 +191,13 @@ class PushbulletNotifier(Notifier):
         Returns:
             List[str]: A list of action IDs extracted from the 'body' field of the dictionaries.
         """
-        action_ids = []
+        action_ids: list[str] = []
         pattern = r"Action ID: (\d+)"
         for push in pushes_list:
             # Check if "body" exists in the dictionary and search for the pattern 'Action ID: [number]'
-            if "body" in push:
-                match = re.search(pattern, push["body"])
+            if "body" in push and isinstance(push["body"], str):
+                push_body = push["body"]
+                match = re.search(pattern, push_body)
                 if match:
                     # Extract the number and add it to the action_ids list
                     action_id = match.group(1)
@@ -392,9 +403,9 @@ class PushbulletNotifier(Notifier):
         Returns:
             tuple: Three lists: one containing the accepts, one containing the rejects and one containing the skips.
         """
-        accepts = []
-        rejects = []
-        skips = []
+        accepts: list[dict[str, str|bool|int|float]] = []
+        rejects: list[dict[str, str|bool|int|float]] = []
+        skips: list[dict[str, str|bool|int|float]] = []
 
         for push in pushes_list:
             # Check if the title is 'Accept' and add to the accepts list
@@ -409,9 +420,9 @@ class PushbulletNotifier(Notifier):
             elif push.get("title") == "Skip":
                 skips.append(push)
 
-        self.logger.debug("Accepts:", accepts)
-        self.logger.debug("Rejects:", rejects)
-        self.logger.debug("Skips:", skips)
+        self.logger.debug("Accepts:", json.dumps(accepts, indent=4))
+        self.logger.debug("Rejects:", json.dumps(rejects, indent=4))
+        self.logger.debug("Skips:", json.dumps(skips, indent=4))
         return accepts, rejects, skips
 
     def check_for_updates(self, **kwargs):

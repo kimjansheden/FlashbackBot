@@ -3,6 +3,7 @@ import os
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 import torch
 from torch import Tensor
+from modules.Helpers.BotSettings.BotSettings import BotSettings
 from modules.Helpers.FileHandler import FileHandler
 
 from modules.Logger import Logger
@@ -16,8 +17,7 @@ class Model:
         self,
         pretrained_model_name_or_path,
         helper: Helpers,
-        max_tokens: int,
-        special_tokens,
+        bot_settings: BotSettings,
         file_handler: FileHandler,
         logger: Logger | None = None,
     ):
@@ -34,8 +34,6 @@ class Model:
                 "Model Logger", "model_log.log", self.log_level, file_handler
             )
         self.path_to_model = pretrained_model_name_or_path
-        self.max_tokens = max_tokens
-        self.special_tokens = special_tokens
         self.device = (
             torch.device("mps")
             if torch.backends.mps.is_available()
@@ -49,7 +47,7 @@ class Model:
                 self.path_to_model, config=self.model_config
             ).to(self.device)
         except OSError as e:
-            e_short = str(e).split('\n')[0]  # Extract first row of the error message
+            e_short = str(e).split("\n")[0]  # Extract first row of the error message
             error_message = f"Error loading model: {e_short}\nMake sure you have specified a valid path to your model."
             self.logger.error(error_message)
             raise ValueError(error_message) from None
@@ -59,13 +57,7 @@ class Model:
         )
         self.posts_dir = os.path.join(self.script_dir, "posts")
 
-        # Create instance of custom LogitsProcessor with words we want to encourage the model to use
-        reward_tokens = [
-            token for token in os.getenv("REWARD_TOKENS", "").split(",") if token
-        ]
-        self.logits_processor = RewardSpecificTokenLogitsProcessor(
-            self.tokenizer, reward_tokens, 5.0
-        )
+        self.bot_settings = bot_settings
 
         # In case we need to remove specific unwanted phrases from the inferred answer
         self.unwanted_phrases = os.getenv("UNWANTED_PHRASES", "").split(",")
@@ -125,6 +117,9 @@ class Model:
 
         return cleaned_dataset
 
+    def refresh_bot_settings(self, bot_settings: BotSettings):
+        self.bot_settings = bot_settings
+
     def _prepare_tokens(self):
         """
         Updates the model's token embeddings with special tokens.
@@ -143,7 +138,7 @@ class Model:
         # self.model.resize_token_embeddings(len(self.tokenizer))
 
         # Print token ID for each special token being used
-        for token in self.special_tokens:
+        for token in self.bot_settings.special_tokens:
             token_id = self.tokenizer.convert_tokens_to_ids(token)
             self.logger.debug(f"Token: {token}, Token ID: {token_id}")
 
@@ -172,7 +167,7 @@ class Model:
 
     def _clean_dataset(self, output: Tensor, input_ids: Tensor) -> str:
         """
-        Processes the given output tensor by decoding it using a tokenizer, cleaning it up, 
+        Processes the given output tensor by decoding it using a tokenizer, cleaning it up,
         and removing unwanted phrases, including special tokens.
 
         The method first decodes the output tensor to text, starting from the position that matches the length of the input tensor.
@@ -212,7 +207,7 @@ class Model:
 
         # Add the special tokens to the list of unwanted phrases we want to cut off from the generated answer
         # Note: We might have to handle spaces before and after these phrases too
-        for token in self.special_tokens:
+        for token in self.bot_settings.special_tokens:
             self.unwanted_phrases_literal.append(token)
 
         # Clean with special characters intact
@@ -252,21 +247,23 @@ class Model:
             Tensor: The tensor containing the generated token IDs from the model.
 
         """
+        # Create instance of custom LogitsProcessor with words we want to encourage the model to use
+        reward_tokens = [token for token in self.bot_settings.reward_tokens if token]
+        logits_processor = RewardSpecificTokenLogitsProcessor(
+            self.tokenizer, reward_tokens, 5.0
+        )
+
         output: Tensor = self.model.generate(
             input_ids,
             attention_mask=attention_mask,
             max_new_tokens=self._calc_max_new_tokens(input_length),
-            temperature=self.helper.config.getfloat("Model", "temperature"),
-            do_sample=self.helper.config.getboolean("Model", "do_sample"),
-            top_k=self.helper.config.getint("Model", "top_k"),
-            top_p=self.helper.config.getfloat("Model", "top_p"),
-            repetition_penalty=self.helper.config.getfloat(
-                "Model", "repetition_penalty"
-            ),
-            no_repeat_ngram_size=self.helper.config.getint(
-                "Model", "no_repeat_ngram_size"
-            ),
-            logits_processor=[self.logits_processor],
+            temperature=self.bot_settings.temperature,
+            do_sample=self.bot_settings.do_sample,
+            top_k=self.bot_settings.top_k,
+            top_p=self.bot_settings.top_p,
+            repetition_penalty=self.bot_settings.repetition_penalty,
+            no_repeat_ngram_size=self.bot_settings.no_repeat_ngram_size,
+            logits_processor=[logits_processor],
         )
         self.logger.paranoid("output: ", output)
         return output
@@ -325,9 +322,7 @@ class Model:
                 - A boolean indicating whether the current context is valid (True) or not (False).
                 - The modified or unmodified current_context based on validation.
         """
-        minimum_new_tokens = self.helper.config.getint(
-            "Model", "minimum_new_tokens", fallback=75
-        )
+        minimum_new_tokens = self.bot_settings.minimum_new_tokens
         # Calculate the number of tokens that can be generated without exceeding the model's context limit
         max_new_tokens = self._calc_max_new_tokens(input_length)
         self.logger.debug("max_new_tokens:", max_new_tokens)
@@ -343,7 +338,9 @@ class Model:
                 )
                 # Adjust value for truncation_length as needed. This length aims to
                 # balance between keeping enough context for a meaningful response and not exceeding model limits.
-                truncation_length = self.max_tokens - minimum_new_tokens - 20
+                truncation_length = (
+                    self.bot_settings.max_tokens - minimum_new_tokens - 20
+                )
                 post_text = post_text[:truncation_length]
                 current_context = post_text
             else:
@@ -358,7 +355,7 @@ class Model:
             return True, current_context
 
     def _calc_max_new_tokens(self, input_length: int):
-        return self.max_tokens - input_length
+        return self.bot_settings.max_tokens - input_length
 
     def _encode_context(self, current_context: str):
         """
@@ -384,9 +381,9 @@ class Model:
         attention_mask: Tensor = torch.ones_like(input_ids)
 
         # If the initial input exceeds the model's context limit, trim the input
-        if input_length > self.max_tokens:
+        if input_length > self.bot_settings.max_tokens:
             # Calculate the number of tokens to trim from input
-            num_tokens_to_trim = input_length - self.max_tokens
+            num_tokens_to_trim = input_length - self.bot_settings.max_tokens
 
             # Trim input_ids and attention_mask to fit the model's context size
             input_ids = input_ids[:, num_tokens_to_trim:]

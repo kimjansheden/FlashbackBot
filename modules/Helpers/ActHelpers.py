@@ -58,7 +58,7 @@ class ActHelpers:
         return pending_posts, actions_taken
 
     def handle_approved_responses(
-        self, actions_taken: dict, pending_posts: dict, approved_action_ids: list
+        self, actions_taken: dict, pending_posts: dict, approved_action_ids: list[str]
     ):
         for approved_action_id in approved_action_ids:
             if approved_action_id in pending_posts:

@@ -53,7 +53,7 @@ class Post:
         self.username = os.getenv("USERNAME")
         self.password = os.getenv("PASSWORD")
 
-    def post(self, approved_id, approved_post):
+    def post(self, approved_id: str, approved_post):
         """
         Handles the posting of an approved reply on a web forum using a browser driver.
 
@@ -111,8 +111,9 @@ class Post:
             self._after_posting(approved_id)
             return True
         except Exception as e:
-            self.logger.info(f"Error posting: {e}")
+            self.logger.error(f"Error posting: {e}")
             self.driver.quit()
+            self.helper.update_config("Misc", {"post_lock": "False"})
             return False
 
     def login(self):
@@ -133,17 +134,19 @@ class Post:
     def _construct_reply_url(self, unique_id):
         return f"https://www.flashback.org/newreply.php?do=newreply&p={unique_id}"
 
-    def _after_posting(self, approved_id):
+    def _after_posting(self, approved_id: str):
         """Performs various tasks after successful posting.
 
         Args:
-            approved_id (int): _description_
+            approved_id (str): The ID of the approved post.
         """
         self.notifier.delete_notification(approved_id)
 
         time_of_post = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        self.post_helper.move_post_to_history(approved_id, time_of_post, self.pending_path, self.post_history_json_path)
+        self.post_helper.move_post_to_history(
+            approved_id, time_of_post, self.pending_path, self.post_history_json_path
+        )
 
         self.helper.save_time_of_last_post(time_of_post)
 
